@@ -1,3 +1,4 @@
+import { REQUEST_BLOCKED } from './http-failure.js'
 import { PREFERENCE_FIELDS } from './preference-fields.js'
 import { capabilityPatch } from './capability-settings.js'
 import { ORIGINAL_IMAGE_CHUNK_BYTES, ORIGINAL_IMAGE_ID_PATTERN } from './image-original-contract.js'
@@ -164,6 +165,7 @@ export function createSubscriptionRpcHandler({ authHandler, usageReader, resetCr
         const known = new Set([
           'ChatGPT subscription is not signed in',
           'ChatGPT sign-in needs to be renewed',
+          REQUEST_BLOCKED,
         ])
         const message = error instanceof Error && known.has(error.message)
           ? error.message
@@ -189,6 +191,7 @@ export function createSubscriptionRpcHandler({ authHandler, usageReader, resetCr
         const known = new Set([
           'ChatGPT subscription is not signed in',
           'ChatGPT sign-in needs to be renewed',
+          REQUEST_BLOCKED,
           'No quota reset is available',
           'No usable quota reset is available',
           'The available quota reset expires too soon',
