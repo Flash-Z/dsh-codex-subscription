@@ -1,4 +1,5 @@
 import { hostDshVersion } from './subagent-runtime.js'
+import { runtimeVersions } from './pi-ai-compat.js'
 import { PACKAGE_VERSION } from './version.js'
 import { collectChecks } from './diagnostic-checks.js'
 import { capabilityCoverage } from './diagnostic-capabilities.js'
@@ -44,6 +45,13 @@ function safeRequests(network) {
   return result
 }
 
+/** pi-ai and DSH's adapter come from the host; a profile can pair an adapter with an older library, so the report names both. */
+function libraryVersions() {
+  const { piAi, adapter } = runtimeVersions()
+  const valid = value => typeof value === 'string' && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]{1,32})?$/u.test(value)
+  return { ...(valid(piAi) ? { piAi } : {}), ...(valid(adapter) ? { adapter } : {}) }
+}
+
 /** Build a support report that deliberately excludes OAuth and account metadata. */
 export async function createSubscriptionDiagnostics({ auth, preferences, login = { phase: 'idle' }, network, modelCatalog, connection, compaction, review, inspectionOptions, operations, runtimeManagement, storage, tools }) {
   const collected = {}
@@ -57,6 +65,11 @@ export async function createSubscriptionDiagnostics({ auth, preferences, login =
     ['websocket', 'transport', () => connection ? safeCounters(connection, ['requests', 'connectionsCreated', 'connectionsReused', 'deltaRequests', 'websocketFailures', 'sseFallbacks']) : undefined],
     ['compaction', 'compaction', () => compaction ? safeCounters(compaction, ['requests', 'checkpointsSaved', 'checkpointsReused']) : undefined],
     ['review', 'transport', () => typeof review?.reviewCounters === 'function' ? safeCounters({ snapshot: () => review.reviewCounters() }, ['requests', 'routed', 'sessionModel', 'retries']) : undefined],
+    ['streamFailure', 'transport', () => {
+      const value = review?.streamFailure?.()
+      if (!Number.isSafeInteger(value?.count)) return undefined
+      return { count: value.count, ...(['prepare', 'request', 'payload', 'stream'].includes(value.stage) ? { stage: value.stage } : {}), ...(typeof value.frame === 'string' && /^[\w.@/-]{1,120}:\d+:\d+$/u.test(value.frame) ? { frame: value.frame } : {}), ...(value.request && typeof value.request === 'object' && JSON.stringify(value.request).length <= 120_000 ? { request: value.request } : {}), ...(value.adapter && typeof value.adapter === 'object' && JSON.stringify(value.adapter).length <= 120_000 ? { adapter: value.adapter } : {}) }
+    }],
     ['operations', 'transport', () => safeOperations(operations?.snapshot?.())],
     ['runtime', 'subagents', async () => {
       const value = await runtimeManagement?.status?.()
@@ -105,7 +118,7 @@ export async function createSubscriptionDiagnostics({ auth, preferences, login =
     },
     package: 'dsh-codex-subscription',
     version: PACKAGE_VERSION,
-    runtime: { node: process.version, platform: process.platform, arch: process.arch, ...(hostDshVersion() ? { dsh: hostDshVersion() } : {}) },
+    runtime: { node: process.version, platform: process.platform, arch: process.arch, ...(hostDshVersion() ? { dsh: hostDshVersion() } : {}), ...libraryVersions() },
     account,
     login,
     requests: collected.requests ?? {},
@@ -114,6 +127,7 @@ export async function createSubscriptionDiagnostics({ auth, preferences, login =
     ...(collected.websocket ? { websocket: collected.websocket } : {}),
     ...(collected.compaction ? { compaction: collected.compaction } : {}),
     ...(collected.review ? { review: collected.review } : {}),
+    ...(collected.streamFailure ? { streamFailure: collected.streamFailure } : {}),
     ...(catalog && ['unavailable', 'online'].includes(catalog.source)
       && ['idle', 'refreshing', 'ok', 'failed'].includes(catalog.refresh)
       ? { catalog: { source: catalog.source, refresh: catalog.refresh, ...(gaps.length ? { unsupported: gaps } : {}) } } : {}),

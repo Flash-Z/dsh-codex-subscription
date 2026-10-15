@@ -13,6 +13,7 @@ import * as dshCredentials from '@deepseek-ai/dsh-credentials'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import * as dshLlm from '@deepseek-ai/dsh-llm'
 import { retryPolicyFor } from './retry-policy.js'
+import { observeAdapter } from './request-observer.js'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import { createRequire } from 'node:module'
 
@@ -341,7 +342,7 @@ export function apply(ctx, config = {}) {
     auth: adapterAuth,
     resolveAttachments: () => ctx.get?.('attachments'),
   })
-  ctx.llm.registerAdapter([PROVIDER], compaction.wrapAdapter(adapter))
+  ctx.llm.registerAdapter([PROVIDER], observeAdapter(compaction.wrapAdapter(adapter), provider))
   const currentAgent = () => ctx.get?.('agents')?.currentInitiator?.()
   const codexSearch = createCodexSearchProvider({
     resolvePreferences: () => readCapabilitySettings(settings.get()),

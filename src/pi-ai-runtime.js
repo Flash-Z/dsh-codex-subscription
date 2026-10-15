@@ -1,6 +1,8 @@
 // Keep every dependency on pi-ai's Codex-specific public surface in one place.
 // The exact peer version makes a DSH update fail visibly until this seam is
 // re-audited instead of silently changing authentication or cache semantics.
+import { redactRequest } from './failure-capture.js'
+import { hoistLeadingSystem, runtimeVersions, understandsSystemMessages } from './pi-ai-compat.js'
 import { openaiCodexProvider as createOpenAICodexProvider } from '@earendil-works/pi-ai/providers/openai-codex'
 import { normalizeTransportEvent } from './transport-failure.js'
 import {
@@ -175,6 +177,28 @@ export function openaiCodexSubscriptionProvider({
     return { ...model, contextWindow: requested }
   })
   const review = { requests: 0, routed: 0, sessionModel: 0, retries: 0 }
+  // pi-ai turns an exception raised while it builds or sends a request into an
+  // error event that carries only the message. Keep how many requests failed and
+  // how far the last one got, so a support report can say where the failure sits.
+  const streamFailure = { count: 0, stage: undefined, frame: undefined, request: undefined, adapter: undefined }
+  const noteAdapterFailure = (kind, adapterOptions, failure) => {
+    try {
+      streamFailure.adapter = {
+        kind,
+        ...(typeof failure?.code === 'string' ? { code: failure.code.slice(0, 40) } : {}),
+        message: String(failure?.message ?? '').slice(0, 160),
+        request: redactRequest(adapterOptions),
+      }
+    } catch { streamFailure.adapter = undefined }
+  }
+  const noteStreamFailure = (stage, error, source) => {
+    streamFailure.count += 1
+    streamFailure.stage = stage
+    // The request is deterministic input to pi-ai: keep a text-free copy so the failure can be replayed.
+    try { streamFailure.request = source === undefined ? undefined : redactRequest(source) } catch { streamFailure.request = undefined }
+    const frame = typeof error?.stack === 'string' ? /([\w.@-]+[\\/][\w.-]+\.[cm]?[jt]sx?):(\d+):(\d+)/u.exec(error.stack.split('\n').slice(1).join('\n')) : null
+    streamFailure.frame = frame ? `${frame[1].replaceAll('\\', '/')}:${frame[2]}:${frame[3]}` : undefined
+  }
   // With the official reviewer chosen, a DSH Auto review call uses the model
   // Codex itself reviews approvals with, when this account's catalog lists it.
   const reviewRoute = (model, context) => {
@@ -233,18 +257,25 @@ export function openaiCodexSubscriptionProvider({
     }
     return { [Symbol.asyncIterator]: () => (replay ??= run()) }
   }
-  const networkIterable = (factory, options, direct = false) => {
+  const networkIterable = (factory, options, direct = false, source) => {
     let iterator
     let prepared
-    const step = async (method, value) => {
+    let stage = 'prepare'
+    const step = async (method, value) => { try {
       // Review calls are one-shot: no WebSocket continuation or cloud compaction.
       const request = await (prepared ??= (direct ? undefined : connection?.prepare(options)) ?? Promise.resolve({ options }))
+      if (stage === 'prepare') stage = 'request'
       const result = await runNetwork('model', () => {
-        iterator ??= factory(direct ? request.options : compaction?.requestOptions(request.options) ?? request.options)[Symbol.asyncIterator]()
+        const next = direct ? request.options : compaction?.requestOptions(request.options) ?? request.options
+        iterator ??= factory({ ...next, async onPayload(payload, requestModel) { stage = 'payload'; return next.onPayload?.(payload, requestModel) } })[Symbol.asyncIterator]()
         return iterator[method]?.(value) ?? (method === 'throw' ? Promise.reject(value) : Promise.resolve({ done: true, value }))
       }, direct ? request.network : compaction?.networkOptions(request.network) ?? request.network)
+      if (!result.done) {
+        if (result.value?.type === 'error' && !request.options?.signal?.aborted) noteStreamFailure(stage, undefined, source)
+        else if (stage === 'payload') stage = 'stream'
+      }
       return result.done ? result : { ...result, value: normalizeTransportEvent(result.value, request.options?.signal) }
-    }
+    } catch (error) { noteStreamFailure(stage, error, source); throw error } }
     return {
       [Symbol.asyncIterator]() { return this },
       next: value => step('next', value),
@@ -252,11 +283,14 @@ export function openaiCodexSubscriptionProvider({
       throw: error => iterator ? step('throw', error) : Promise.reject(error),
     }
   }
-  const routed = (method, model, context, options) => {
+  const routed = (method, model, transcript, options) => {
+    // A pi-ai that predates system messages in the transcript gets them as systemPrompt and tools.
+    const context = understandsSystemMessages(runtimeVersions().piAi) ? transcript : hoistLeadingSystem(transcript)
     const route = reviewRoute(model, context)
+    const source = { method, model, context, options }
     const create = () => route === undefined
-      ? networkIterable(prepared => provider[method](model, context, prepared), withPreferences(model, options))
-      : networkIterable(prepared => provider[method](model, context, prepared), withReview(route, options), true)
+      ? networkIterable(prepared => provider[method](model, context, prepared), withPreferences(model, options), false, source)
+      : networkIterable(prepared => provider[method](model, context, prepared), withReview(route, options), true, source)
     return isDshAutoReview(context) ? reviewIterable(create) : create()
   }
   return Object.freeze({
@@ -266,6 +300,8 @@ export function openaiCodexSubscriptionProvider({
     stream: (model, context, options) => routed('stream', model, context, options),
     streamSimple: (model, context, options) => routed('streamSimple', model, context, options),
     reviewCounters: () => ({ ...review }),
+    streamFailure: () => ({ ...streamFailure }),
+    noteAdapterFailure,
   })
 }
 

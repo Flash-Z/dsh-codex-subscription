@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { runtimeVersions } from '../src/pi-ai-compat.js'
 import { RPC_ENDPOINTS } from '../src/rpc-contract.js'
 import { IMAGE_FEATURE_DEFAULTS } from '../src/image-features.js'
 import test from 'node:test'
@@ -323,13 +324,14 @@ test('plugin registers one Codex route, subscription image tool, and DSH-trusted
       operations: { scope: 'plugin-process', capacity: 32, dropped: 0, events: [] },
       package: 'dsh-codex-subscription',
       version: PACKAGE_VERSION,
-      runtime: { node: process.version, platform: process.platform, arch: process.arch, dsh: hostDshVersion() },
+      runtime: { node: process.version, platform: process.platform, arch: process.arch, dsh: hostDshVersion(), ...Object.fromEntries(Object.entries(runtimeVersions()).filter(([, version]) => typeof version === 'string')) },
       account: { status: 'signed-out' },
       login: { phase: 'idle' },
       requests: {},
       websocket: { requests: 0, connectionsCreated: 0, connectionsReused: 0, deltaRequests: 0, websocketFailures: 0, sseFallbacks: 0 },
       compaction: { requests: 0, checkpointsSaved: 0, checkpointsReused: 0 },
       review: { requests: 0, routed: 0, sessionModel: 0, retries: 0 },
+      streamFailure: { count: 0 },
       catalog: diagnostics.value.catalog,
       configuration: {
         autoQuotaRetry: false,
