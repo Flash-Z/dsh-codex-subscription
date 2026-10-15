@@ -8,7 +8,7 @@ const publicError = (code, message) => ({
   error: { code, message, details: { issues: [] } },
 })
 
-export function createSubscriptionRpcHandler({ authHandler, usageReader, resetCreditService, preferences, defaultModel, runtimeManagement, diagnosticsReader, modelCatalog, originalImages, resolveInheritedOriginal, closeConnections, onAccountChanged, onCleanupFailure }) {
+export function createSubscriptionRpcHandler({ authHandler, usageReader, accountUsageReader, resetCreditService, preferences, defaultModel, runtimeManagement, diagnosticsReader, modelCatalog, originalImages, resolveInheritedOriginal, closeConnections, onAccountChanged, onCleanupFailure }) {
   return async (endpoint, payload, signal) => {
     if (endpoint === 'default-model/status' || endpoint === 'default-model/select') {
       try {
@@ -173,6 +173,15 @@ export function createSubscriptionRpcHandler({ authHandler, usageReader, resetCr
         return publicError('internal', message)
       }
     }
+    if (endpoint === 'usage/accounts') {
+      try {
+        signal.throwIfAborted()
+        return { ok: true, value: { accounts: await accountUsageReader.readAll({ force: payload?.force === true, signal }) } }
+      } catch (error) {
+        if (signal.aborted) throw error
+        return publicError('internal', 'Could not read the usage of the signed-in accounts')
+      }
+    }
     if (endpoint === 'reset-credit/inspect' || endpoint === 'reset-credit/prepare' || endpoint === 'reset-credit/consume') {
       try {
         signal.throwIfAborted()
@@ -217,7 +226,7 @@ export function createSubscriptionRpcHandler({ authHandler, usageReader, resetCr
       // misreport that transaction or prevent the remaining invalidations.
       const tasks = [() => closeConnections?.(), () => usageReader.clearCache(),
         () => resetCreditService.clear(), () => modelCatalog?.clear(), () => onAccountChanged?.()]
-      if (endpoint === 'logout') tasks.push(() => usageReader.clear())
+      if (endpoint === 'logout') tasks.push(() => usageReader.clear(), () => accountUsageReader?.clear())
       if (endpoint === 'account/remove' && typeof payload?.id === 'string') tasks.push(() => usageReader.clearScope(payload.id))
       const outcomes = await Promise.allSettled(tasks.map(task => Promise.resolve().then(task)))
       if (outcomes.some(value => value.status === 'rejected')) {
